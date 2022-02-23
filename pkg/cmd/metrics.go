@@ -2,8 +2,14 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"path"
+	"strings"
 
 	"github.com/go-kit/log/level"
+	"github.com/observatorium/obsctl/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -57,8 +63,43 @@ func NewMetricsGetCmd(ctx context.Context) *cobra.Command {
 		Use:   "rules.raw",
 		Short: "Get configured rules of a tenant.",
 		Long:  "Get configured rules of a tenant.",
-		Run: func(cmd *cobra.Command, args []string) {
-			level.Info(logger).Log("msg", "rules.raw called")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			conf, err := config.Read()
+			if err != nil {
+				return err
+			}
+
+			client, err := conf.Client(ctx)
+			if err != nil {
+				return err
+			}
+
+			cctx, err := conf.GetCurrent()
+			if err != nil {
+				return err
+			}
+
+			resp, err := client.Get(
+				strings.TrimSuffix(conf.APIs[conf.Current.API].URL, "/") +
+					path.Join("/api/metrics/v1", cctx.Tenant, "/api/v1/rules/raw"),
+			)
+			if err != nil {
+				return err
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("got invalid status code: %d", resp.StatusCode)
+			}
+
+			data, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			fmt.Println(string(data))
+
+			return nil
 		},
 	}
 
