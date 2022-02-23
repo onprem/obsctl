@@ -94,9 +94,10 @@ func runLogin(ctx context.Context, logger log.Logger, cfg loginConfig) error {
 		config.TenantName(cfg.tenant),
 		config.APIName(cfg.api),
 		cfg.tenant,
-		config.OIDCConfig{
+		&config.OIDCConfig{
 			AccessToken:  tkn.AccessToken,
 			RefreshToken: tkn.RefreshToken,
+			Expiry:       tkn.Expiry,
 
 			Audience:     cfg.oidc.audience,
 			ClientID:     cfg.oidc.clientID,

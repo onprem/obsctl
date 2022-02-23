@@ -1,11 +1,19 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 type APIName string
@@ -26,13 +34,14 @@ type API struct {
 }
 
 type Context struct {
-	Tenant string     `json:"tenant"`
-	OIDC   OIDCConfig `json:"oidc"`
+	Tenant string      `json:"tenant"`
+	OIDC   *OIDCConfig `json:"oidc"`
 }
 
 type OIDCConfig struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
+	AccessToken  string    `json:"accessToken"`
+	RefreshToken string    `json:"refreshToken"`
+	Expiry       time.Time `json:"expiry"`
 
 	Audience     string `json:"audience"`
 	ClientID     string `json:"clientId"`
@@ -124,7 +133,7 @@ func (c *Config) RemoveAPI(name APIName) error {
 	return c.Save()
 }
 
-func (c *Config) AddTenant(name TenantName, api APIName, tenant string, oidcCfg OIDCConfig) error {
+func (c *Config) AddTenant(name TenantName, api APIName, tenant string, oidcCfg *OIDCConfig) error {
 	if _, ok := c.APIs[api]; !ok {
 		return fmt.Errorf("api with name %s doesn't exist", api)
 	}
@@ -197,4 +206,83 @@ func (c *Config) GetCurrent() (Context, error) {
 	}
 
 	return c.APIs[c.Current.API].Contexts[c.Current.Tenant], nil
+}
+
+func (c *Config) updateOIDCToken(ctx context.Context) error {
+	cctx, err := c.GetCurrent()
+	if err != nil {
+		return fmt.Errorf("getting current context: %w", err)
+	}
+
+	tkn := new(oauth2.Token)
+
+	tkn.AccessToken = cctx.OIDC.AccessToken
+	tkn.RefreshToken = cctx.OIDC.RefreshToken
+	tkn.Expiry = cctx.OIDC.Expiry
+
+	if tkn.Valid() {
+		return nil
+	}
+
+	ccc, err := cctx.OIDC.clientCredentialsConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("creating clinet credentials config: %w", err)
+	}
+
+	tkn, err = ccc.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching token: %w", err)
+	}
+
+	cctx.OIDC.AccessToken = tkn.AccessToken
+	cctx.OIDC.RefreshToken = tkn.RefreshToken
+	cctx.OIDC.Expiry = tkn.Expiry
+
+	c.APIs[c.Current.API].Contexts[c.Current.Tenant] = cctx
+
+	return c.Save()
+}
+
+func (c *Config) Client(ctx context.Context) (*http.Client, error) {
+	cctx, err := c.GetCurrent()
+	if err != nil {
+		return nil, fmt.Errorf("getting current context: %w", err)
+	}
+
+	if cctx.OIDC != nil {
+		if err := c.updateOIDCToken(ctx); err != nil {
+			return nil, err
+		}
+
+		ccc, err := cctx.OIDC.clientCredentialsConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("creating clinet credentials config: %w", err)
+		}
+
+		return oauth2.NewClient(ctx, ccc.TokenSource(ctx)), nil
+	}
+
+	return http.DefaultClient, nil
+}
+
+func (o OIDCConfig) clientCredentialsConfig(ctx context.Context) (clientcredentials.Config, error) {
+	provider, err := oidc.NewProvider(ctx, o.IssuerURL)
+	if err != nil {
+		return clientcredentials.Config{}, fmt.Errorf("constructing oidc provider: %w", err)
+	}
+
+	ccc := clientcredentials.Config{
+		ClientID:     o.ClientID,
+		ClientSecret: o.ClientSecret,
+		TokenURL:     provider.Endpoint().TokenURL,
+		Scopes:       []string{"openid", "offline_access"},
+	}
+
+	if o.Audience != "" {
+		ccc.EndpointParams = url.Values{
+			"audience": []string{o.Audience},
+		}
+	}
+
+	return ccc, nil
 }
